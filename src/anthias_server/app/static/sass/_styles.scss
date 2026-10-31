@@ -3404,3 +3404,19 @@ body.auth-body {
   height: auto;
   min-height: 6rem;
 }
+// Live display captures keep their aspect ratio, including portrait TVs.
+.live-view-screen {
+  background: #000;
+  border-radius: 0.75rem;
+  min-height: 12rem;
+  display: grid;
+  place-items: center;
+
+  img {
+    max-width: 100%;
+    max-height: 70vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+  }
+}

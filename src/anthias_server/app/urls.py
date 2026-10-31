@@ -1,7 +1,7 @@
 from django.conf import settings as django_settings
 from django.urls import path
 
-from . import design_system, views
+from . import design_system, live_view, views
 
 app_name = 'anthias_app'
 
@@ -18,6 +18,8 @@ urlpatterns = [
     path('splash-page/', views.splash_page, name='splash_page'),
     path('login/', views.login, name='login'),
     path('', views.home, name='home'),
+    path('live-view/', live_view.page, name='live_view'),
+    path('live-view/frame/', live_view.frame, name='live_frame'),
     path('system-info/', views.system_info, name='system_info'),
     path('integrations/', views.integrations, name='integrations'),
     path('settings/', views.settings_view, name='settings'),

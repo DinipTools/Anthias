@@ -347,6 +347,7 @@ def get_viewer_context(board: str, target_platform: str) -> dict[str, Any]:
             viewer_extra_apt_dependencies.extend(
                 [
                     'cage',
+                    'grim',
                     'qt6-wayland',
                     'wlr-randr',
                 ]

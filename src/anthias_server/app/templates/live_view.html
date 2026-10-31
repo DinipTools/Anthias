@@ -1,0 +1,27 @@
+{% extends "_layout.html" %}
+{% load static %}
+
+{% block title %}Live view{% if player_name %} · {{ player_name }}{% endif %}{% endblock %}
+{% block extra_head %}
+<script src="{% static 'dist/js/live-view.js' %}" defer></script>
+{% endblock %}
+
+{% block main %}
+<div class="app-container" data-live-view data-frame-url="{% url 'anthias_app:live_frame' %}">
+  <div class="page-header-bar">
+    <div class="page-header-bar__title">
+      <h1 class="page-header">Live view</h1>
+      <p class="page-header-bar__lede">{% if player_name %}<strong>{{ player_name }}</strong> · {% endif %}See what is on the TV. Updates about once a second, without audio.</p>
+    </div>
+    <div class="page-header-bar__actions">
+      <button type="button" class="app-btn app-btn-light app-btn-pill" data-live-pause aria-pressed="false">Pause</button>
+      <a class="app-btn app-btn-light app-btn-pill" href="{% url 'anthias_app:home' %}">Back to schedule</a>
+    </div>
+  </div>
+  <p data-live-status role="status" aria-live="polite">Connecting to the display…</p>
+  <div class="live-view-screen">
+    <img data-live-image alt="Live capture of the TV display" hidden>
+  </div>
+  <p class="mt-3">Capture pauses while this tab is hidden. This shows the player’s display output; it cannot confirm the TV’s physical panel is working.</p>
+</div>
+{% endblock %}

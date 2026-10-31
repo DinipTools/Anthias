@@ -41,6 +41,7 @@ from anthias_viewer.constants import SERVER_WAIT_TIMEOUT as SERVER_WAIT_TIMEOUT
 from anthias_viewer.constants import SPLASH_DELAY as SPLASH_DELAY
 from anthias_viewer.constants import SPLASH_PAGE_URL as SPLASH_PAGE_URL
 from anthias_viewer.constants import STANDBY_SCREEN as STANDBY_SCREEN
+from anthias_viewer.live_view import capture_frame
 from anthias_viewer.media_player import MediaPlayerProxy
 from anthias_viewer.playback import (
     navigate_to_asset,
@@ -734,6 +735,11 @@ def send_current_asset_id_to_server(correlation_id: str | None) -> None:
     )
 
 
+def send_live_frame(correlation_id: str | None) -> None:
+    if correlation_id:
+        reply_sender.send(correlation_id, capture_frame())
+
+
 def _reply_cec_status(correlation_id: str | None) -> None:
     """Answer a ``display_power_status`` request.
 
@@ -842,6 +848,7 @@ commands = {
     'unblank': lambda _: unblank_display(),
     'unknown': lambda _: command_not_found(),
     'current_asset_id': lambda corr: send_current_asset_id_to_server(corr),
+    'live_frame': send_live_frame,
     # HDMI-CEC. Handled here rather than in anthias-server because the
     # viewer is the only container with access to /dev/cec* on every
     # board and every deployment (privileged: true in all three compose

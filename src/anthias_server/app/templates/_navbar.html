@@ -34,6 +34,12 @@
           </a>
         </li>
 
+        <li class="app-tab-item">
+          <a href="{% url 'anthias_app:live_view' %}" class="app-tab-link {% if active_nav == 'live_view' %}active{% endif %}" @click="open = false">
+            <i class="ti ti-device-tv"></i><span>Live view</span>
+          </a>
+        </li>
+
         {% if is_balena %}
         <li class="app-tab-item">
           <a
