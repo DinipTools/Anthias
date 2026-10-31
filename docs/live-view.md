@@ -1,7 +1,7 @@
 # Live view
 
 Open **Live view** in the dashboard navigation for a continuous feed targeting
-10 FPS, at up to 960 pixels wide, without audio. Frames are decoded before
+10 FPS, at up to 960 pixels on the longest edge, without audio. Frames are decoded before
 replacing the displayed image so updates do not blank the view.
 
 Only an open, visible Live view page requests capture. Pause, closing the page,
@@ -70,12 +70,20 @@ The Redis integration test uses `redis:6379` by default, or
 authentication, stream cleanup, hidden tabs, pause/resume, and continuous image
 visibility while the next frame is decoding.
 
-To exercise actual capture without a physical TV, install `cage`, `wf-recorder`,
+To exercise actual capture without a physical TV, install `cage`, `wf-recorder`, `wlr-randr`,
 `ffmpeg` and Python's Pillow package, then run:
 
 ```bash
 python tools/verify_live_view_capture.py
 ```
+
+The encoder follows the rotation actually applied to the TV, including changes
+made while a live feed is open. It corrects the raw scanout orientation before
+scaling and JPEG encoding.
+
+To verify portrait capture, run `ANTHIAS_TEST_ROTATION=270 python
+tools/verify_live_view_capture.py`. Values 0, 90, 180 and 270 are supported;
+the check uses colored corners to detect the wrong rotation direction.
 
 This plays a generated video under a private headless Cage instance, checks
 every JPEG, verifies that frames change, and measures the delivered capture

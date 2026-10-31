@@ -32,6 +32,7 @@ JPEG = b'\xff\xd8pixels\xff\xd9'
 def reset_capture(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(live_view, '_worker', None)
     monkeypatch.setattr(live_view, '_wanted_until', 0.0)
+    monkeypatch.setattr(live_view, '_rotation', 0)
     monkeypatch.setenv('WAYLAND_DISPLAY', 'wayland-0')
 
 
@@ -48,6 +49,27 @@ def test_viewers_share_one_encoder_and_renew_its_lease() -> None:
 def test_no_viewer_means_no_encoder() -> None:
     assert not live_view._wanted()
     assert live_view._worker is None
+
+
+def test_rotation_change_retires_the_old_encoder() -> None:
+    with mock.patch.object(live_view.threading, 'Thread') as thread:
+        live_view.request_stream(rotation=0)
+        assert live_view._wanted(0)
+        live_view.request_stream(rotation=270)
+        assert not live_view._wanted(0)
+        assert live_view._wanted(270)
+    assert thread.call_count == 1
+
+
+def test_live_stream_uses_the_applied_display_rotation() -> None:
+    import anthias_viewer
+
+    with (
+        mock.patch.object(anthias_viewer, '_last_applied_rotation', 270),
+        mock.patch.object(anthias_viewer, 'request_stream') as request,
+    ):
+        anthias_viewer.commands['live_stream'](None)
+    request.assert_called_once_with(rotation=270)
 
 
 def test_expired_lease_stops_a_real_encoder_process() -> None:

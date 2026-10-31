@@ -24,26 +24,32 @@ from anthias_common.live_view import (
 logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _wanted_until = 0.0
+_rotation = 0
 _worker: threading.Thread | None = None
 
 
-def request_stream(_: str | None = None) -> None:
-    global _wanted_until, _worker
+def request_stream(_: str | None = None, *, rotation: int = 0) -> None:
+    global _wanted_until, _worker, _rotation
     with _lock:
         _wanted_until = monotonic() + LEASE_SECONDS
+        _rotation = rotation
         if _worker is None:
             _worker = threading.Thread(
-                target=_record, name='live-view', daemon=True
+                target=_record, args=(rotation,), name='live-view', daemon=True
             )
             _worker.start()
 
 
-def _wanted() -> bool:
+def _wanted(rotation: int | None = None) -> bool:
     with _lock:
-        return monotonic() < _wanted_until
+        return monotonic() < _wanted_until and (
+            rotation is None or rotation == _rotation
+        )
 
 
-def jpeg_frames(process: subprocess.Popen[bytes]) -> Iterator[bytes]:
+def jpeg_frames(
+    process: subprocess.Popen[bytes], rotation: int = 0
+) -> Iterator[bytes]:
     """Read JPEGs without blocking lease expiry on a silent recorder."""
     if process.stdout is None:
         raise RuntimeError('Recorder has no output pipe')
@@ -51,7 +57,7 @@ def jpeg_frames(process: subprocess.Popen[bytes]) -> Iterator[bytes]:
     last_frame = monotonic()
     with selectors.DefaultSelector() as selector:
         selector.register(process.stdout, selectors.EVENT_READ)
-        while _wanted():
+        while _wanted(rotation):
             if monotonic() - last_frame > 5:
                 raise RuntimeError('Screen capture stopped producing frames')
             if not selector.select(timeout=0.2):
@@ -73,7 +79,18 @@ def jpeg_frames(process: subprocess.Popen[bytes]) -> Iterator[bytes]:
                 yield frame
 
 
-def recorder_command() -> list[str]:
+def recorder_command(rotation: int = 0) -> list[str]:
+    # wf-recorder 0.5 captures scanout pixels without the output transform.
+    filters = {
+        0: [],
+        90: ['transpose=cclock'],
+        180: ['hflip', 'vflip'],
+        270: ['transpose=clock'],
+    }[rotation]
+    filters.append(
+        "scale=w='min(960,iw)':h='min(960,ih)':"
+        'force_original_aspect_ratio=decrease:force_divisible_by=2'
+    )
     return [
         'wf-recorder',
         '-y',
@@ -88,7 +105,7 @@ def recorder_command() -> list[str]:
         '-x',
         'yuvj420p',
         '-F',
-        "scale=w='min(960,iw)':h=-2",
+        ','.join(filters),
         '-p',
         'threads=1',
         '-f',
@@ -101,7 +118,7 @@ def _publish(client: redis.Redis, payload: dict[str, str | float]) -> None:
     client.publish(FRAME_CHANNEL, encoded)
 
 
-def _record() -> None:
+def _record(rotation: int = 0) -> None:
     global _worker
     try:
         with redis.Redis(
@@ -116,13 +133,13 @@ def _record() -> None:
                     raise RuntimeError('Live view requires a Wayland display')
                 with tempfile.TemporaryFile() as errors:
                     process = subprocess.Popen(
-                        recorder_command(),
+                        recorder_command(rotation),
                         stdout=subprocess.PIPE,
                         stderr=errors,
                         bufsize=0,
                     )
                     try:
-                        for frame in jpeg_frames(process):
+                        for frame in jpeg_frames(process, rotation):
                             _publish(
                                 client,
                                 {

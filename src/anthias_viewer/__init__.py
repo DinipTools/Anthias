@@ -843,7 +843,9 @@ commands = {
     'unblank': lambda _: unblank_display(),
     'unknown': lambda _: command_not_found(),
     'current_asset_id': lambda corr: send_current_asset_id_to_server(corr),
-    'live_stream': request_stream,
+    'live_stream': lambda _: request_stream(
+        rotation=clamp_screen_rotation(_last_applied_rotation)
+    ),
     # HDMI-CEC. Handled here rather than in anthias-server because the
     # viewer is the only container with access to /dev/cec* on every
     # board and every deployment (privileged: true in all three compose

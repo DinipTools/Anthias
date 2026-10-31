@@ -1,6 +1,7 @@
 """Exercise the actual capture code against moving video under headless Cage.
 
-Run with Python 3.13+, cage, grim and ffmpeg installed. No TV required.
+Run with Python 3.13+, Cage, wf-recorder, wlr-randr, FFmpeg and Pillow.
+Set ANTHIAS_TEST_ROTATION to 0, 90, 180 or 270. No TV required.
 """
 
 import io
@@ -22,6 +23,13 @@ def capture_video(directory: Path) -> None:
             Path(__file__).resolve().parents[1]
             / 'src/anthias_viewer/live_view.py'
         )
+    )
+    rotation = int(os.environ.get('ANTHIAS_TEST_ROTATION', '0'))
+    transform = {0: 'normal', 90: '270', 180: '180', 270: '90'}[rotation]
+    subprocess.run(
+        ['wlr-randr', '--output', 'HEADLESS-1', '--transform', transform],
+        check=True,
+        timeout=5,
     )
     with (directory / 'player.log').open('w') as log:
         player = subprocess.Popen(
@@ -47,7 +55,7 @@ def capture_video(directory: Path) -> None:
         try:
             with (directory / 'recorder.log').open('w') as recorder_log:
                 recorder = subprocess.Popen(
-                    capture['recorder_command'](),
+                    capture['recorder_command'](rotation),
                     stdout=subprocess.PIPE,
                     stderr=recorder_log,
                 )
@@ -55,12 +63,43 @@ def capture_video(directory: Path) -> None:
                     capture['jpeg_frames'].__globals__['_wanted_until'] = (
                         monotonic() + 6
                     )
+                    capture['jpeg_frames'].__globals__['_rotation'] = rotation
                     frames: set[bytes] = set()
                     count = 0
+                    size = None
                     first = None
                     last = monotonic()
-                    for frame in capture['jpeg_frames'](recorder):
-                        Image.open(io.BytesIO(frame)).verify()
+                    for frame in capture['jpeg_frames'](recorder, rotation):
+                        with Image.open(io.BytesIO(frame)) as image:
+                            image.load()
+                            size = image.size
+                            if rotation in (90, 270):
+                                assert image.width < image.height, (
+                                    f'Portrait display captured as {image.size}'
+                                )
+                            else:
+                                assert image.width > image.height, (
+                                    f'Landscape display captured as {image.size}'
+                                )
+                            if count >= 15:
+                                rgb = image.convert('RGB')
+                                corners = [
+                                    ((1, 1), (255, 0, 0)),
+                                    ((5, 1), (0, 255, 0)),
+                                    ((1, 5), (0, 0, 255)),
+                                    ((5, 5), (255, 255, 0)),
+                                ]
+                                for (x, y), expected in corners:
+                                    actual = rgb.getpixel(
+                                        (
+                                            image.width * x // 6,
+                                            image.height * y // 6,
+                                        )
+                                    )
+                                    assert all(
+                                        abs(a - b) < 60
+                                        for a, b in zip(actual, expected)
+                                    ), (rotation, (x, y), actual, expected)
                         now = monotonic()
                         if first is None:
                             first = now
@@ -72,7 +111,7 @@ def capture_video(directory: Path) -> None:
                             f'{count} frames, {len(frames)} distinct. {Path(recorder_log.name).read_text()}'
                         )
                     print(
-                        f'PASS: changing video, {count} frames, {(count - 1) / (last - first):.1f} FPS'
+                        f'PASS: rotation {rotation}, {size}, changing video, {count} frames, {(count - 1) / (last - first):.1f} FPS'
                     )
                 finally:
                     recorder.terminate()
@@ -93,6 +132,15 @@ def main() -> None:
         directory = Path(temporary)
         runtime = directory / 'runtime'
         runtime.mkdir(mode=0o700)
+        rotation = int(os.environ.get('ANTHIAS_TEST_ROTATION', '0'))
+        size = '360x640' if rotation in (90, 270) else '640x360'
+        pattern = (
+            f'testsrc2=size={size}:rate=10,'
+            'drawbox=x=0:y=0:w=iw/3:h=ih/3:color=red:t=fill,'
+            'drawbox=x=iw*2/3:y=0:w=iw/3:h=ih/3:color=lime:t=fill,'
+            'drawbox=x=0:y=ih*2/3:w=iw/3:h=ih/3:color=blue:t=fill,'
+            'drawbox=x=iw*2/3:y=ih*2/3:w=iw/3:h=ih/3:color=yellow:t=fill'
+        )
         subprocess.run(
             [
                 'ffmpeg',
@@ -101,7 +149,7 @@ def main() -> None:
                 '-f',
                 'lavfi',
                 '-i',
-                'testsrc2=size=640x360:rate=10',
+                pattern,
                 '-t',
                 '6',
                 '-c:v',
