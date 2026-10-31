@@ -3,23 +3,26 @@
 Run with Python 3.13+, cage, grim and ffmpeg installed. No TV required.
 """
 
-import base64
+import io
 import os
 import runpy
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from time import sleep
+from time import monotonic
+
+from PIL import Image
 
 
 def capture_video(directory: Path) -> None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
     capture = runpy.run_path(
         str(
             Path(__file__).resolve().parents[1]
             / 'src/anthias_viewer/live_view.py'
         )
-    )['capture_frame']
+    )
     with (directory / 'player.log').open('w') as log:
         player = subprocess.Popen(
             [
@@ -42,18 +45,38 @@ def capture_video(directory: Path) -> None:
             stderr=subprocess.STDOUT,
         )
         try:
-            frames: set[bytes] = set()
-            for _ in range(6):
-                sleep(1.1)
-                reply = capture()
-                if 'jpeg' not in reply:
-                    raise AssertionError(reply)
-                frames.add(base64.b64decode(reply['jpeg']))
-            if len(frames) < 3:
-                raise AssertionError(
-                    f'Capture did not show motion: {Path(log.name).read_text()}'
+            with (directory / 'recorder.log').open('w') as recorder_log:
+                recorder = subprocess.Popen(
+                    capture['recorder_command'](),
+                    stdout=subprocess.PIPE,
+                    stderr=recorder_log,
                 )
-            print('PASS: composed Wayland video produces changing JPEG frames')
+                try:
+                    capture['jpeg_frames'].__globals__['_wanted_until'] = (
+                        monotonic() + 6
+                    )
+                    frames: set[bytes] = set()
+                    count = 0
+                    first = None
+                    last = monotonic()
+                    for frame in capture['jpeg_frames'](recorder):
+                        Image.open(io.BytesIO(frame)).verify()
+                        now = monotonic()
+                        if first is None:
+                            first = now
+                        last = now
+                        count += 1
+                        frames.add(frame)
+                    if first is None or count < 35 or len(frames) < 3:
+                        raise AssertionError(
+                            f'{count} frames, {len(frames)} distinct. {Path(recorder_log.name).read_text()}'
+                        )
+                    print(
+                        f'PASS: changing video, {count} frames, {(count - 1) / (last - first):.1f} FPS'
+                    )
+                finally:
+                    recorder.terminate()
+                    recorder.wait(timeout=5)
         except Exception:
             print(Path(log.name).read_text(), flush=True)
             raise

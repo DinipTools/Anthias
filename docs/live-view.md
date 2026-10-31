@@ -1,30 +1,27 @@
 # Live view
 
-Open **Live view** in the dashboard navigation to see the display output.
-Frames refresh about once a second at half the display resolution, without
-audio. Images, webpages and video are captured from the compositor.
+Open **Live view** in the dashboard navigation for a continuous feed targeting
+10 FPS, at up to 960 pixels wide, without audio. Frames are decoded before
+replacing the displayed image so updates do not blank the view.
 
-Capture runs only in response to frame requests. Closing the page, hiding
-the tab or pressing **Pause** stops requests. An in-progress capture can
-finish after you leave, but no background encoder or recording remains.
-Multiple browsers share a capture for one second. If capture fails, the
-page hides the old frame and retries.
+Only an open, visible Live view page requests capture. Pause, closing the page,
+or hiding its tab disconnects the feed. After three seconds without demand,
+the viewer stops the encoder. Cleanup can take another second. Several browsers
+share one encoder. No recording is retained.
 
-This feature targets the x86 Wayland viewer. The same capture path is
-installed on Pi 5 and generic ARM64 Wayland images, but has not been
-verified on those devices. Direct EGLFS and framebuffer viewers are
-unsupported. The feed shows the player output, rather than measuring the
-physical TV panel or its brightness.
+The capture path supports the x86 Wayland viewer. Pi 5 and generic ARM64
+Wayland images install the same dependency, but have not been verified on
+physical hardware. EGLFS and framebuffer viewers are unsupported. The feed
+shows the player output and cannot confirm the physical TV panel is working.
 
-## Install on an existing x86 device
+## Update an existing x86 installation
 
-This branch starts from `v2026.10.0`. Back up your installation through
-Settings, then run these commands as your existing Anthias install user:
+Run as your existing Anthias install user:
 
 ```bash
 cd ~/anthias
-git fetch diniptools
-git switch --track diniptools/feat/live-view
+git switch feat/live-view
+git pull --ff-only
 
 BUILD_TARGET=x86 ENVIRONMENT=production \
   ./bin/generate_dev_mode_dockerfiles.sh
@@ -33,53 +30,53 @@ MODE=build DOCKER_TAG=diniptools-live-view \
   ./bin/upgrade_containers.sh
 ```
 
-The `diniptools` remote should point to
-`https://github.com/DinipTools/Anthias.git`. If the local branch already
-exists, use `git switch feat/live-view` and `git pull --ff-only` instead
-of `git switch --track`. Preserve local edits before switching branches.
+Both the server and viewer images need rebuilding. The viewer now needs
+`wf-recorder`; updating only the web files is insufficient. The installation
+reuses the existing configuration and media mounts. If the upgrade script
+exits because `/var/run/reboot-required` exists, reboot and rerun its build command.
 
-The build reuses the existing configuration and media mounts. If the
-upgrade script exits because `/var/run/reboot-required` exists, reboot,
-then rerun its `MODE=build` command. Open `/live-view/` on the device's
-existing dashboard address after the containers start. Enable dashboard
-authentication through Settings if you want login required for the feed.
+On first checkout, fetch the `diniptools` remote and run
+`git switch --track diniptools/feat/live-view` instead of switching an existing
+local branch. The remote should be `https://github.com/DinipTools/Anthias.git`.
+The standard installer downloads official images without this feature.
 
-Future updates use `git pull --ff-only` followed by the two build commands.
-The standard installer downloads official images, which do not contain
-this feature.
+## Capture and delivery
 
-## Implementation and checks
+`anthias_viewer/live_view.py` starts a single `wf-recorder` process when demand
+arrives over the existing viewer command bus. It captures the composed Wayland
+display and encodes JPEG frames at 10 FPS. A short lease renewed by open streams
+controls its lifetime. The worker reads with a timeout so it can stop even when
+the recorder is silent. Redis operations have bounded retries.
 
-`anthias_server/app/live_view.py` serves the page and a JPEG endpoint using
-the dashboard's authentication rules. The endpoint requests a frame through
-the existing Redis viewer command bus. `anthias_viewer/live_view.py` captures
-Cage's composed output using `grim`, then encodes a JPEG with FFmpeg.
-Debian's `grim` package has JPEG support disabled. Redis retries and both
-capture subprocesses have bounded timeouts. Replies expire after 30 seconds,
-and the endpoint rejects frames older than five seconds.
+`anthias_server/app/live_view.py` forwards frames from Redis over one asynchronous
+HTTP response at `/live-view/stream/`. It uses the dashboard's authentication
+rules, disables proxy buffering, drops stale frames, and reconnects every
+30 seconds to check authorization again. Closing the HTTP response releases
+the subscription and stops renewing capture demand.
 
-Two designs were compared: per-frame request/reply and a background capture
-thread controlled by a short demand lease. The designers and reviewer,
-all using the same model family, chose request/reply for its smaller lifecycle
-and zero idle capture. Timestamp validation was retained from the lease
-design. A capture can occupy the viewer command subscriber for up to two
-seconds, including on a display failure; playback itself runs separately.
+The page decodes each image off-screen, then replaces the previous image.
+A capture error hides the last image so it cannot appear live. A disconnected
+stream reconnects automatically while the page remains open and visible.
 
-Run focused checks:
+## Verification
 
 ```bash
 bun run build
 uv run --group test pytest tests/test_live_view.py tests/test_live_view_browser.py
 ```
 
-To verify moving video capture without a physical TV, install `cage`, `grim`
-and `ffmpeg`, then run:
+The Redis integration test uses `redis:6379` by default, or
+`ANTHIAS_LIVE_TEST_REDIS_URL` when set. Tests verify shared demand, process cleanup,
+authentication, stream cleanup, hidden tabs, pause/resume, and continuous image
+visibility while the next frame is decoding.
+
+To exercise actual capture without a physical TV, install `cage`, `wf-recorder`,
+`ffmpeg` and Python's Pillow package, then run:
 
 ```bash
 python tools/verify_live_view_capture.py
 ```
 
-The script creates a private headless Cage session, plays a generated test
-video and checks that the actual capture code returns changing JPEG frames.
-The browser tests exercise the built page, including pause, hidden tabs,
-failed captures and requests that take longer than the polling interval.
+This plays a generated video under a private headless Cage instance, checks
+every JPEG, verifies that frames change, and measures the delivered capture
+rate. It does not benchmark the deployment machine or its remote network.

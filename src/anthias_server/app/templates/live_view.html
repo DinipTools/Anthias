@@ -7,11 +7,11 @@
 {% endblock %}
 
 {% block main %}
-<div class="app-container" data-live-view data-frame-url="{% url 'anthias_app:live_frame' %}">
+<div class="app-container" data-live-view data-stream-url="{% url 'anthias_app:live_stream' %}">
   <div class="page-header-bar">
     <div class="page-header-bar__title">
       <h1 class="page-header">Live view</h1>
-      <p class="page-header-bar__lede">{% if player_name %}<strong>{{ player_name }}</strong> · {% endif %}See what is on the TV. Updates about once a second, without audio.</p>
+      <p class="page-header-bar__lede">{% if player_name %}<strong>{{ player_name }}</strong> · {% endif %}See what is on the TV. Live video at 10 FPS, without audio.</p>
     </div>
     <div class="page-header-bar__actions">
       <button type="button" class="app-btn app-btn-light app-btn-pill" data-live-pause aria-pressed="false">Pause</button>

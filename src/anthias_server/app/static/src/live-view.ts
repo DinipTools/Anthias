@@ -2,11 +2,9 @@ function startLiveView(root: HTMLElement): () => void {
   const image = root.querySelector<HTMLImageElement>('[data-live-image]')
   const status = root.querySelector<HTMLElement>('[data-live-status]')
   const button = root.querySelector<HTMLButtonElement>('[data-live-pause]')
-  const endpoint = root.dataset.frameUrl
+  const endpoint = root.dataset.streamUrl
   if (!image || !status || !button || !endpoint) return () => {}
-
   const ui = { image, status, button, endpoint }
-
   let paused = false
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -20,47 +18,86 @@ function startLiveView(root: HTMLElement): () => void {
     imageUrl = null
   }
 
-  async function refresh(): Promise<void> {
+  async function showFrame(value: unknown, job: AbortController): Promise<void> {
+    if (typeof value !== 'object' || value === null) throw new Error('Invalid live stream.')
+    if ('error' in value && typeof value.error === 'string') {
+      clearImage()
+      ui.status.textContent = value.error
+      return
+    }
+    if (!('jpeg' in value) || typeof value.jpeg !== 'string' ||
+        value.jpeg.length > 1400000 || !('captured_at' in value) ||
+        typeof value.captured_at !== 'number' || !Number.isFinite(value.captured_at)) {
+      throw new Error('Invalid live frame.')
+    }
+    const bytes = Uint8Array.from(atob(value.jpeg), (c) => c.charCodeAt(0))
+    const nextUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }))
+    try {
+      const next = new Image()
+      next.alt = ui.image.alt
+      next.dataset.liveImage = ''
+      next.src = nextUrl
+      await next.decode()
+      if (job.signal.aborted) return
+      // Keep the displayed frame until its replacement is fully decoded.
+      const previousUrl = imageUrl
+      ui.image.replaceWith(next)
+      ui.image = next
+      imageUrl = nextUrl
+      if (previousUrl) URL.revokeObjectURL(previousUrl)
+      ui.status.textContent = 'Live · 10 FPS'
+    } finally {
+      if (imageUrl !== nextUrl) URL.revokeObjectURL(nextUrl)
+    }
+  }
+
+  async function connect(): Promise<void> {
     if (stopped || paused || document.hidden || pending) return
     const job = new AbortController()
     pending = job
-    const timeout = setTimeout(() => job.abort(), 6000)
+    let watchdog = setTimeout(() => job.abort(), 8000)
     try {
       const response = await fetch(ui.endpoint, {
-        signal: job.signal,
-        cache: 'no-store',
-        credentials: 'same-origin',
-        redirect: 'error',
+        signal: job.signal, cache: 'no-store',
+        credentials: 'same-origin', redirect: 'error',
       })
-      if (!response.ok) {
-        const body: unknown = await response.json()
-        const message = typeof body === 'object' && body !== null &&
-          'error' in body && typeof body.error === 'string'
-          ? body.error : 'Live view is unavailable. Retrying…'
-        throw new Error(message)
+      if (!response.ok || !response.body ||
+          !response.headers.get('Content-Type')?.startsWith('application/x-ndjson')) {
+        throw new Error('Live view is unavailable. Reconnecting…')
       }
-      if (!response.headers.get('Content-Type')?.startsWith('image/jpeg')) {
-        throw new Error('Please sign in again to view the display.')
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      try {
+        while (!job.signal.aborted) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          if (buffer.length > 2000000) throw new Error('Invalid live stream.')
+          let newline: number
+          while ((newline = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, newline)
+            buffer = buffer.slice(newline + 1)
+            if (!line) continue
+            const frame: unknown = JSON.parse(line)
+            await showFrame(frame, job)
+            clearTimeout(watchdog)
+            watchdog = setTimeout(() => job.abort(), 5000)
+          }
+        }
+      } finally {
+        await reader.cancel().catch(() => {})
       }
-      const blob = await response.blob()
-      if (job.signal.aborted) return
-      clearImage()
-      imageUrl = URL.createObjectURL(blob)
-      ui.image.src = imageUrl
-      await ui.image.decode()
-      if (job.signal.aborted) return
-      ui.image.hidden = false
-      ui.status.textContent = `Live · Updated ${new Date().toLocaleTimeString()}`
     } catch (error: unknown) {
       if (!paused && !document.hidden && !stopped) {
         clearImage()
         ui.status.textContent = error instanceof Error && error.name !== 'AbortError'
-          ? error.message : 'The display did not respond. Retrying…'
+          ? error.message : 'Connection interrupted. Reconnecting…'
       }
     } finally {
-      clearTimeout(timeout)
+      clearTimeout(watchdog)
       pending = null
-      if (!stopped && !paused && !document.hidden) timer = setTimeout(refresh, 1000)
+      if (!stopped && !paused && !document.hidden) timer = setTimeout(connect, 1000)
     }
   }
 
@@ -70,9 +107,8 @@ function startLiveView(root: HTMLElement): () => void {
       pending?.abort()
       ui.status.textContent = 'Paused while this tab is hidden.'
     } else if (!paused) {
-      clearImage()
       ui.status.textContent = 'Connecting to the display…'
-      void refresh()
+      void connect()
     }
   }
 
@@ -85,15 +121,14 @@ function startLiveView(root: HTMLElement): () => void {
       pending?.abort()
       ui.status.textContent = 'Paused · Showing the last captured frame.'
     } else {
-      clearImage()
       ui.status.textContent = 'Connecting to the display…'
-      void refresh()
+      void connect()
     }
   }
 
   document.addEventListener('visibilitychange', visibility)
   ui.button.addEventListener('click', toggle)
-  void refresh()
+  void connect()
   return () => {
     stopped = true
     clearTimeout(timer)

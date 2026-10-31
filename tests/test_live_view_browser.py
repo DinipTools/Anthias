@@ -1,8 +1,11 @@
 """Run after `bun run build`; browser exercises the shipped live-view bundle."""
 
+import base64
 import io
+import json
 from collections.abc import Callable
 from pathlib import Path
+from time import time
 
 import pytest
 from django.test import Client
@@ -35,7 +38,7 @@ def _open(
             route.abort()
 
     page.route('http://live.test/**', serve)
-    page.route('http://live.test/live-view/frame/', handler)
+    page.route('http://live.test/live-view/stream/', handler)
     page.clock.install()
     page.goto('http://live.test/live-view/')
 
@@ -46,6 +49,15 @@ def _jpeg() -> bytes:
     return output.getvalue()
 
 
+def _frame() -> str:
+    return (
+        json.dumps(
+            {'jpeg': base64.b64encode(_jpeg()).decode(), 'captured_at': time()}
+        )
+        + '\n'
+    )
+
+
 def test_live_feed_pauses_resumes_and_stops_when_hidden(
     page: Page, client: Client
 ) -> None:
@@ -53,14 +65,12 @@ def test_live_feed_pauses_resumes_and_stops_when_hidden(
 
     def frame(route: Route) -> None:
         requests.append(route.request.url)
-        route.fulfill(body=_jpeg(), content_type='image/jpeg')
+        route.fulfill(body=_frame(), content_type='application/x-ndjson')
 
     _open(page, client, frame)
     image = page.locator('[data-live-image]')
     expect(image).to_be_visible()
-    expect(page.locator('[data-live-status]')).to_contain_text(
-        'Live · Updated'
-    )
+    expect(page.locator('[data-live-status]')).to_contain_text('Live · 10 FPS')
     page.get_by_role('button', name='Pause', exact=True).click()
     count = len(requests)
     page.clock.fast_forward(5000)
@@ -90,9 +100,12 @@ def test_failed_capture_hides_old_frame_and_recovers(
 
     def frame(route: Route) -> None:
         if unavailable:
-            route.fulfill(status=503, json={'error': 'The TV is unavailable.'})
+            route.fulfill(
+                body=json.dumps({'error': 'The TV is unavailable.'}) + '\n',
+                content_type='application/x-ndjson',
+            )
         else:
-            route.fulfill(body=_jpeg(), content_type='image/jpeg')
+            route.fulfill(body=_frame(), content_type='application/x-ndjson')
 
     _open(page, client, frame)
     image = page.locator('[data-live-image]')
@@ -128,7 +141,7 @@ def test_leaving_the_page_stops_capture_requests(
 
     def frame(route: Route) -> None:
         requests.append(route.request.url)
-        route.fulfill(body=_jpeg(), content_type='image/jpeg')
+        route.fulfill(body=_frame(), content_type='application/x-ndjson')
 
     _open(page, client, frame)
     expect(page.locator('[data-live-image]')).to_be_visible()
@@ -136,3 +149,34 @@ def test_leaving_the_page_stops_capture_requests(
     count = len(requests)
     page.clock.fast_forward(5000)
     assert len(requests) == count
+
+
+def test_current_frame_stays_visible_while_next_frame_decodes(
+    page: Page, client: Client
+) -> None:
+    page.add_init_script("""
+        const originalDecode = HTMLImageElement.prototype.decode;
+        let captures = 0;
+        HTMLImageElement.prototype.decode = function() {
+            if (this.hasAttribute('data-live-image') && ++captures === 2) {
+                return new Promise((resolve, reject) => {
+                    window.finishNextFrame = () => originalDecode.call(this).then(resolve, reject);
+                });
+            }
+            return originalDecode.call(this);
+        };
+    """)
+
+    def stream(route: Route) -> None:
+        route.fulfill(
+            body=_frame() + _frame(), content_type='application/x-ndjson'
+        )
+
+    _open(page, client, stream)
+    page.wait_for_function("typeof window.finishNextFrame === 'function'")
+    image = page.locator('[data-live-image]')
+    expect(image).to_be_visible()
+    old_source = image.get_attribute('src')
+    page.evaluate('window.finishNextFrame()')
+    expect(image).to_be_visible()
+    expect(image).not_to_have_attribute('src', old_source)
